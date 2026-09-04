@@ -12,9 +12,18 @@
 inventory/*
 selection/*
 export/*
+probe/*
 
 !inventory/diagnostics.md
 !selection/codebook_ab.md
+!probe/README.md
+!probe/contamination_result.md
+
+# ============================================
+# 토큰화/오염 프로브 진단 (모델별 .md만 추적, 다른 산출물은 재생성)
+# ============================================
+token_check/*
+!token_check/*.md
 
 # ============================================
 # LLM 응답 캐시 / API 키
@@ -56,5 +65,5 @@ codebook_raw.txt
 selection/
 *.pdf
 /사전스터디
-# ���� Ž���� ��ũ��Ʈ
+# ���� Ž���� ��ũ��Ʈ
 load.py
