@@ -34,11 +34,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if getattr(sys.stdout, "encoding", "").lower() != "utf-8":  # 다른 kgss_*.py가 import할 때 이중 래핑 방지
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 STRUCTURAL = {-8.0, -1.0}
 TRAILING_NUM = re.compile(r"\d+$")
 AB_SUFFIX = re.compile(r"^(?P<stem>.+?)(?P<ab>[AB])(?P<yr>\d{2})?$")
+
+# variables.csv 버전별 열 이름 (kgss_codebook.py와 동일한 패턴 —
+# CLAUDE.md 6절 "두 스크립트 간 열 이름 불일치" 함정 참고)
+DK_COLS = ["legacy_dk", "dk"]
+INAP_COLS = ["legacy_inap", "inap"]
+
+
+def pick_col(dfr: pd.DataFrame, names: list[str]) -> str | None:
+    for n in names:
+        if n in dfr.columns:
+            return n
+    return None
 
 
 def battery_stem(var: str) -> str:
@@ -83,11 +96,13 @@ def main():
     print(f"후보 {len(cand)}개")
 
     info = vt.set_index("var")
+    dk_col = pick_col(vt, DK_COLS)
+    inap_col = pick_col(vt, INAP_COLS)
     cand["선택지"] = [
         fmt_options(
             info.at[v, "value_labels"] if v in info.index else "{}",
-            info.at[v, "dk"] if v in info.index else "[]",
-            info.at[v, "inap"] if v in info.index else "[]",
+            info.at[v, dk_col] if dk_col and v in info.index else "[]",
+            info.at[v, inap_col] if inap_col and v in info.index else "[]",
         )
         for v in cand["var"]
     ]
@@ -126,16 +141,17 @@ def main():
     n_ab = int((cand["AB분할표본"] == "Y").sum())
     print(f"AB 분할표본 문항 {n_ab}개")
 
-    ycol = f"y{args.year}"
+    # wave_items.csv는 --target-year 시점에 이미 단일 연도로 계산돼 있어
+    # 연도별 열(y2023 등)이 아니라 answer_rate 하나뿐이다.
     sheet = cand[
-        ["var", "label", "선택지", "n_options", ycol, "eta2", "eta2_구간",
+        ["var", "label", "선택지", "n_options", "answer_rate", "eta2", "eta2_구간",
          "배터리", "배터리크기", "AB분할표본", "ordinal_guess"]
     ].rename(
         columns={
             "var": "변수명",
             "label": "문항내용",
             "n_options": "선택지수",
-            ycol: "응답률",
+            "answer_rate": "응답률",
             "ordinal_guess": "순서형",
         }
     )
