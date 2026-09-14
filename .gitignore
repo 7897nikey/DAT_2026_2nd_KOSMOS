@@ -1,5 +1,6 @@
 # ============================================
-# 원본 데이터 (KOSSDA 이용약관상 재배포 금지)
+# 원본 데이터 (용량·재생성 가능성 때문에 제외 — 라이선스 문제 아님.
+# 성균관대 SRC에서 별도 신청 없이 받을 수 있음, CLAUDE.md 2절 참고)
 # ============================================
 *.sav
 *.dta
@@ -13,11 +14,15 @@ inventory/*
 selection/*
 export/*
 probe/*
+persona_sample/*
+register_pilot/*
 
 !inventory/diagnostics.md
 !selection/codebook_ab.md
 !probe/README.md
 !probe/contamination_result.md
+!persona_sample/README.md
+!register_pilot/register_pilot_result.md
 
 # ============================================
 # 토큰화/오염 프로브 진단 (모델별 .md만 추적, 다른 산출물은 재생성)

@@ -46,7 +46,8 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if getattr(sys.stdout, "encoding", "").lower() != "utf-8":  # 다른 kgss_*.py가 import할 때 이중 래핑 방지
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 DEFAULT_MODELS = [
     "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct",
@@ -267,9 +268,12 @@ def part_c(model, tok, digit_ids, L, device, topk):
             L.append("> 누출이 절반을 넘습니다. few-shot 예시나 형식 지시 강화가 필요합니다.\n")
 
 
-# ---------------------------------------------------------------- 오염 프로브 로짓
+# ---------------------------------------------------------------- 로짓 강제선택 프로브
+# (오염 프로브 A, 인칭×화계 파일럿 등 "숫자 하나만 답하게 하고 그 로짓을 읽는다"
+#  구조의 프로브를 전부 여기서 처리한다. 이름은 오염 점검 때 먼저 붙었지만
+#  범용이다.)
 def contam_prompt_text(tok, user_text: str) -> str:
-    """오염 프로브용 프롬프트. chat_template + prefill을 우선 시도한다.
+    """강제선택 프로브용 프롬프트. chat_template + prefill을 우선 시도한다.
 
     part_c의 build_prompts와 같은 원칙(공백 prefill로 앞공백 토큰을 미리
     소비)을 단일 사용자 메시지에 적용한 버전이다.
@@ -286,20 +290,31 @@ def contam_prompt_text(tok, user_text: str) -> str:
 
 
 def part_d_contam(model, tok, digit_ids, probes_path: Path, device: str, mid: str) -> list[dict]:
-    """probes.csv의 A_로짓분포 행마다 선택지 숫자 토큰의 첫 토큰 확률을 뽑는다.
+    """probes.csv에서 codes 열이 채워진 행마다 선택지 숫자 토큰의 첫 토큰
+    확률을 뽑는다.
+
+    type 값은 안 가린다 — kgss_contamination.py의 오염 프로브 A(type이
+    "A_로짓분포")든, kgss_register_pilot.py 같은 다른 스크립트가 만든 강제
+    숫자 응답 프로브든, codes(선택지 코드 JSON 리스트) 열만 있으면 똑같이
+    처리한다. 이 함수는 순수하게 "프롬프트를 주고 특정 숫자 토큰들의 첫 토큰
+    로짓을 재정규화해서 돌려준다"는 범용 기능이다.
 
     반환값의 model_dist는 codes 순서에 맞춘, 선택지 토큰들로만 재정규화한
     분포다(mass = 정규화 전 확률질량 합 = 선택지 밖으로 샌 정도의 보수).
     """
+    import time
     import torch
-    print(f"  [D] 오염 프로브 로짓 ({probes_path.name})")
+    print(f"  [D] 로짓 강제선택 프로브 ({probes_path.name})")
     probes = pd.read_csv(probes_path)
-    a = probes[probes["type"] == "A_로짓분포"].copy()
-    print(f"      대상 {len(a)}건")
+    a = probes[probes["codes"].notna()].copy()
+    n = len(a)
+    print(f"      대상 {n}건")
 
+    report_every = max(1, n // 10) if n >= 10 else max(1, n)
     out = []
     n_skip = 0
-    for _, r in a.iterrows():
+    t0 = time.time()
+    for i, (_, r) in enumerate(a.iterrows(), 1):
         codes = json.loads(r["codes"])
         targets = [digit_ids.get(str(c)) for c in codes]
         if any(t is None for t in targets):
@@ -315,31 +330,68 @@ def part_d_contam(model, tok, digit_ids, probes_path: Path, device: str, mid: st
         dist = [x / mass for x in raw] if mass > 0 else [1 / len(raw)] * len(raw)
         out.append({"probe_id": r["probe_id"], "model": mid,
                     "model_dist": json.dumps(dist), "mass": mass})
+        if i % report_every == 0 or i == n:
+            elapsed = time.time() - t0
+            print(f"      {i}/{n}건 ({i/n*100:.0f}%) — 경과 {elapsed:.0f}초")
     if n_skip:
         print(f"      단일 토큰이 아닌 코드 포함 {n_skip}건 건너뜀")
-    print(f"      완료 {len(out)}건")
+    print(f"      완료 {len(out)}건 (총 {time.time()-t0:.0f}초)")
     return out
 
 
-# ---------------------------------------------------------------- 오염 프로브 생성(B/C)
+# ---------------------------------------------------------------- 오염 프로브 생성(B/C/E)
 def part_e_generate(model, tok, probes_path: Path, device: str, mid: str,
-                    max_new_tokens: int) -> list[dict]:
-    """probes.csv의 B(원문완성)/C(선택지순서) 행을 실제로 생성해 텍스트 응답을 얻는다.
+                    max_new_tokens: int, checkpoint_path: Path | None = None,
+                    flush_every: int = 10) -> list[dict]:
+    """probes.csv의 B(원문완성)/C(선택지순서)/E(직접회상) 행을 실제로 생성해
+    텍스트 응답을 얻는다.
 
     kgss_contamination.py의 '기존 호출 파이프라인'이 따로 없어서, 이미 로드된
-    모델을 재사용해 여기서 직접 생성한다. 채점(문자열 유사도, 순서 일치)이
-    재현 가능해야 하므로 그리디 디코딩(do_sample=False)을 쓴다 — 표준 guided
-    prompting 설계(Golchin & Surdeanu 2023)도 결정적 생성을 전제한다.
-    """
-    import torch
-    print(f"  [E] B/C 생성 (max_new_tokens={max_new_tokens})")
-    probes = pd.read_csv(probes_path)
-    bc = probes[probes["type"].isin(["B_원문완성", "C_선택지순서"])].copy()
-    print(f"      대상 {len(bc)}건")
+    모델을 재사용해 여기서 직접 생성한다. 채점(문자열 유사도, 순서 일치,
+    회피/정확도 판정)이 재현 가능해야 하므로 그리디 디코딩(do_sample=False)을
+    쓴다 — 표준 guided prompting 설계(Golchin & Surdeanu 2023)도 결정적
+    생성을 전제한다.
 
+    checkpoint_path: 지정하면 flush_every건마다 지금까지의 결과를 이 경로에
+    덮어써 저장한다(2026-09 Colab 런타임 연결 끊김으로 210/840건 진행 상황을
+    통째로 날린 사고 이후 추가 — 브라우저 쪽만 끊기고 런타임 디스크가 살아있는
+    경우 재실행 시 이 파일을 읽어 이미 끝낸 probe_id를 건너뛴다. 런타임 자체가
+    회수되면 디스크도 같이 사라지므로 완전한 보장은 아니지만, 흔한 실패 모드
+    (브라우저 재연결)는 커버한다).
+    """
+    import time
+    import torch
+    print(f"  [E] B/C/E 생성 (max_new_tokens={max_new_tokens})")
+    probes = pd.read_csv(probes_path)
+    bc = probes[probes["type"].isin(["B_원문완성", "C_선택지순서", "E_직접회상"])].copy()
+    n_total = len(bc)
+
+    out: list[dict] = []
+    done_ids: set = set()
+    if checkpoint_path is not None and checkpoint_path.exists():
+        try:
+            prev = pd.read_csv(checkpoint_path)
+            prev = prev[prev["model"] == mid] if "model" in prev.columns else prev.iloc[0:0]
+            done_ids = set(prev["probe_id"])
+            out = prev.to_dict("records")
+        except Exception as e:
+            print(f"      체크포인트 읽기 실패({type(e).__name__}: {e}) — 처음부터 생성")
+
+    bc = bc[~bc["probe_id"].isin(done_ids)].copy()
+    n = len(bc)
+    if done_ids:
+        print(f"      대상 {n_total}건 — 체크포인트에서 {len(done_ids)}건 이어받음, "
+             f"이번에 {n}건 생성")
+    else:
+        print(f"      대상 {n}건")
+
+    # 문항당 최대 200토큰 그리디 생성이라 건당 몇 초씩 걸린다. 진행률이 없으면
+    # 화면이 한참 멈춘 것처럼 보이므로(실제로 겪은 혼란), 10건마다 경과·예상
+    # 잔여 시간을 찍는다.
+    report_every = max(1, n // 20) if n >= 20 else max(1, n // 4) or 1
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
-    out = []
-    for _, r in bc.iterrows():
+    t0 = time.time()
+    for i, (_, r) in enumerate(bc.iterrows(), 1):
         user_text = str(r["prompt"])
         text = user_text
         if getattr(tok, "chat_template", None):
@@ -357,7 +409,15 @@ def part_e_generate(model, tok, probes_path: Path, device: str, mid: str,
         resp = tok.decode(gen_ids[0][ids["input_ids"].shape[1]:],
                           skip_special_tokens=True)
         out.append({"probe_id": r["probe_id"], "model": mid, "response": resp})
-    print(f"      완료 {len(out)}건")
+        if checkpoint_path is not None and (i % flush_every == 0 or i == n):
+            pd.DataFrame(out).to_csv(checkpoint_path, index=False, encoding="utf-8-sig")
+        if i % report_every == 0 or i == n:
+            elapsed = time.time() - t0
+            rate = elapsed / i
+            eta = rate * (n - i)
+            print(f"      {i}/{n}건 ({i/n*100:.0f}%) — 경과 {elapsed/60:.1f}분, "
+                 f"건당 {rate:.1f}초, 잔여 약 {eta/60:.1f}분")
+    print(f"      완료 {len(out)}건 (총 {n_total}건 중, {(time.time()-t0)/60:.1f}분)")
     return out
 
 
@@ -453,10 +513,11 @@ def main():
                         print(f"  오염 프로브 로짓 실패: {type(e).__name__}: {e}")
                         traceback.print_exc(limit=8)
                     if not args.no_contam_generate:
+                        ckpt_path = outdir / f"_ckpt_gen_{mid.replace('/', '_')}.csv"
                         try:
                             gen_rows.extend(part_e_generate(
                                 model, tok, contam_probes_path, device, mid,
-                                args.max_new_tokens))
+                                args.max_new_tokens, checkpoint_path=ckpt_path))
                         except Exception as e:
                             print(f"  B/C 생성 실패: {type(e).__name__}: {e}")
                             traceback.print_exc(limit=8)
@@ -479,6 +540,13 @@ def main():
             combined_g = merge_and_save(outdir / "responses.csv", gen_rows, args.models)
             print(f"B/C 생성 응답 {len(gen_rows)}건(이번 실행) / 누적 {len(combined_g)}건 "
                  f"-> {outdir / 'responses.csv'}")
+            # 모델별 생성이 끝까지 완료돼 responses.csv에 반영됐으니, 그 모델의
+            # 임시 체크포인트는 더 이상 필요 없다 (남겨두면 다음 실행에서 오래된
+            # 부분 결과를 잘못 이어받을 위험이 있다).
+            for mid in args.models:
+                ckpt_path = outdir / f"_ckpt_gen_{mid.replace('/', '_')}.csv"
+                if ckpt_path.exists():
+                    ckpt_path.unlink()
 
     print(f"완료 -> {outdir.resolve()}")
 
