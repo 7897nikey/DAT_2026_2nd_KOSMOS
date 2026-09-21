@@ -16,9 +16,11 @@ export/*
 probe/*
 persona_sample/*
 register_pilot/*
+experiment/*
 
 !inventory/diagnostics.md
 !selection/codebook_ab.md
+!selection/agreement_result.md
 !probe/README.md
 !probe/contamination_result.md
 !persona_sample/README.md

@@ -3,6 +3,25 @@
 LLM에 인구통계 페르소나를 프롬프트로 부여해 한국 여론조사 문항(KGSS)에
 응답시키고, 가상 응답이 실제 응답을 얼마나 재현하는지 정량 분석한다.
 
+## 연구 설계
+
+관측되는 건 "LLM 응답 분포가 실제와 다르다"는 사실 하나지만 원인은 여러
+개일 수 있다. 아래 네 성분으로 분해해서 각각 측정·개입한다.
+
+| 성분 | 측정 | 개입 |
+|---|---|---|
+| ① 정보 부족 | 셀 최빈응답 상한 대비 개인예측 정확도 | 응답 이력 조건 추가 |
+| ② 척도 표현 | 출력 엔트로피, 셀 내 분산 재현율 | SSR, 디코딩 온도 |
+| ③ 내용 편향 | 민감 문항 방향성 편차 | **인칭 × 화계 변형 (헤드라인)** |
+| ④ 형식 민감도 | TV거리, 인간 기준선 대비 배율 | 정순/역순 교차 |
+
+**대조군 4수준**: 페르소나 없음(C0) / "한국 성인" / 성별+연령 / 6변수
+(SEX·AGE·EDUC·MARITAL·REGION·URBAN). 같은 응답자 표본을 4수준 전부에
+재사용해 조건 간 대응비교가 가능하게 한다.
+
+③(인칭×화계 조작)이 이 프로젝트의 고유 기여다 — 한국어 화계 체계는
+영어권 선행연구에서 시도할 수 없는 통제된 조작을 허용한다.
+
 ## 데이터
 
 원본 파일은 저장소에 포함되지 않는다 — 라이선스 제약이 아니라 **용량과
@@ -36,14 +55,29 @@ uv run kgss_codebook.py --pdf "2003-2025_KGSS_Codebook_v5.pdf" `
 # 3. (선택) 사람이 읽는 코드북/회차 데이터 변환
 uv run kgss_export.py --sav "2003-2025_KGSS_kor_public_v2.sav" --year 2023
 
-# 4. 선택지 토큰화 점검 (로컬은 토크나이저만, 로짓은 Colab/Kaggle에서)
+# 4. 문항 선정 작업지 생성 (3인 독립 태깅용 xlsx)
+uv run kgss_shortlist.py --inv .\inventory --out .\selection --year 2023
+#   -> 각자 자기 시트에 민감여부 태깅 후 kgss_agreement.py로 합치기
+uv run kgss_agreement.py --out .\selection --files `
+    주희=selection\문항선정_작업지_2023_정.csv `
+    태우=selection\문항선정_작업지_2023_태우라벨링.xlsx `
+    다교=selection\문항선정_작업지_2023_HUR.xlsx
+
+# 5. 선택지 토큰화 점검 (로컬은 토크나이저만, 로짓은 Colab/Kaggle에서)
 uv run kgss_token_check.py --tokenizer-only --worded .\selection\variables_worded.csv
 
-# 5. 사전학습 오염 프로브: 생성(로컬) -> 로짓/생성 실행(Colab) -> 채점(로컬)
+# 6. 사전학습 오염 프로브: 생성(로컬) -> 로짓/생성 실행(Colab) -> 채점(로컬)
 uv run kgss_contamination.py build --inv .\inventory `
     --worded .\selection\variables_worded.csv --out .\probe
 #   Colab에서 kgss_contam_colab.ipynb 실행 -> probe/logit_responses.csv, responses.csv 다운로드 후 여기 probe/ 에 넣기
 uv run kgss_contamination.py score --out .\probe
+
+# 7. 6변수 페르소나 표본 생성 (FINALWT 가중 복원추출, 대조군 "6변수" 조건용)
+uv run kgss_persona_bootstrap.py --inv .\inventory --out .\persona_sample --n 200 --seed 42
+
+# 8. 본실험 프롬프트 생성 (최종 문항 확정 후) + Colab에서 로짓 추출
+uv run kgss_experiment_prompt.py --items .\selection\최종문항.csv --out .\experiment
+uv run kgss_token_check.py --contam-probes .\experiment\experiment_probes.csv --out .\experiment
 ```
 
 ## 주요 산출물
@@ -54,24 +88,22 @@ uv run kgss_contamination.py score --out .\probe
 | `inventory/diagnostics.md` | 데이터 진단 요약 |
 | `selection/variables_worded.csv` | 전 변수 설문 원문 + 선택지. 프롬프트 원천 |
 | `selection/ab_pairs.csv` | A/B 분할표본과 인간 응답 순서 효과 |
+| `selection/문항선정_작업지_2023.xlsx` | 3인 태깅용 문항 선정 작업지 (사실/차별/가치관, 민감여부) |
+| `selection/agreement_result.md` | 3인 태깅 일치도(Cohen's/Fleiss' kappa) |
+| `selection/문항선정_병합_2023.csv` | 3인 태깅 다수결 병합본 — 최종 문항 뽑을 때 기준 |
 | `token_check/*.md` | 모델별 선택지 토큰화 · 첫 토큰 로짓 점검 결과 |
 | `probe/README.md` | 오염 프로빙 절차 |
-| `probe/contamination_result.md` | 오염 프로브 채점 결과 (A/B/C, 모델별) |
+| `probe/contamination_result.md` | 오염 프로브 채점 결과 (A/B/C/E, 모델별) |
+| `persona_sample/persona_sample.csv` | FINALWT 가중 복원추출 6변수 페르소나 표본 |
 
-## 사전학습 오염 점검
+## 진행 상황
 
-주 회차(2023) 자료가 EXAONE 3.5(2.4B) / Kanana 1.5(2.1B)의 사전학습에
-포함됐는지 세 가지 방식으로 점검한다 — 모두 출처 명시/미명시 대조를 통제로
-쓴다.
-
-- **A(로짓 기반 분포 재현)**: 문항에 강제로 번호만 답하게 한 뒤 선택지
-  숫자 토큰의 첫 토큰 로짓을 뽑아, 모델의 암묵적 분포를 실제 가중 응답
-  분포와 Wasserstein거리로 비교
-- **B(원문 완성)**: 설문 문장 앞부분을 주고 나머지를 잇게 함 —
-  오염 탐지 표준 기법(Golchin & Surdeanu 2023)
-- **C(선택지 순서 재현)**: 섞어놓은 선택지를 설문지 원래 순서로 재배열
-
-**2026-09-04 1차 결과**: 모델 2개 × 프로브 3개, 총 6개 검정 중 유의(p<0.05)한
-신호 없음. 가장 근접한 값은 B/EXAONE p=0.059(경계, 다중비교 미보정). 2023년
-회차에 대해 일관된 오염 증거는 없다는 잠정 결론이며, 최종 판단은 팀 논의로
-확정한다. 자세한 수치는 `probe/contamination_result.md` 참고.
+- **문항 선정**: 후보 303개(2023년 회차) 중 사실/차별/가치관 자동 분류 완료,
+  3인 독립 태깅으로 민감여부 확정 중. 최종 30개(유형별 10개, 배터리당 1개)
+  선정이 다음 단계.
+- **사전학습 오염 점검**: 로짓 기반(A)·원문완성(B)·선택지순서(C)·직접회상(E)
+  4가지 프로브 + 가짜출처 대조군으로 n=140 재실행 완료. EXAONE 3.5의 집계
+  응답 비율에 대한 약한 신호(A, 다중비교 미보정 기준)만 남고 나머지는 뚜렷한
+  오염 증거 없음. 자세한 수치는 `probe/contamination_result.md` 참고.
+- **본실험**: 프롬프트 생성 파이프라인(`kgss_experiment_prompt.py`)까지 준비
+  완료, 최종 문항 확정 후 실행 예정.

@@ -6,9 +6,17 @@ r"""
 
 자동 채움:
     변수명 / 문항내용 / 선택지 / 응답수 / eta2 / eta2_구간 / 배터리 / AB분할표본
-사람 판단 (빈 열):
-    유형        사실 / 태도 / 민감
-    포함        Y / N
+사람 판단 (빈 열, Seoul Table 3 방식 — 문항유형을 먼저 나누고 그 안에서
+민감성을 정의한다. CLAUDE.md 3절 미결 "민감 문항 선정 기준 문서화",
+운영진 Q6 대응. 2026-09-11 개정: 기존 "유형(사실/태도/민감)" 1열 구조를
+2열(문항유형 + 민감여부)로 분리, 2026-09-11 개정: 타이핑 부담을 줄이려고
+"패턴화된 태도·차별"/"가치관·규범"을 각각 "차별"/"가치관"으로 축약 — 전체
+정의는 "태깅기준" 시트에 그대로 있다. 드롭다운(데이터 유효성 검사)으로
+정확히 이 값들만 고를 수 있게 해서 철자가 갈리는 걸 막는다 — 나중에
+kgss_agreement.py로 3인 일치도를 계산하려면 값이 정확히 같아야 한다):
+    문항유형    사실 / 차별 / 가치관   (드롭다운)
+    민감여부    Y / N                  (드롭다운, 문항유형이 "사실"이면 비워둠)
+    포함        Y / N                  (드롭다운)
     메모
 
 배터리 탐지: 변수명 끝의 숫자를 떼어낸 어간이 같으면 같은 문항군으로 본다.
@@ -33,6 +41,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from openpyxl.styles import Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
 
 if getattr(sys.stdout, "encoding", "").lower() != "utf-8":  # 다른 kgss_*.py가 import할 때 이중 래핑 방지
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -81,7 +91,15 @@ def main():
     ap.add_argument("--inv", default="./inventory")
     ap.add_argument("--out", default="./selection")
     ap.add_argument("--year", type=int, default=2023)
+    ap.add_argument("--worded", default="./selection/variables_worded.csv",
+                    help="kgss_codebook.py가 만든 설문 원문 파일. wave_items.csv의 "
+                         "label은 .sav 변수라벨이라 문항별로 축약 정도가 들쭉날쭉해서 "
+                         "(어떤 건 전체 질문, 어떤 건 3~4단어 태그) 태깅용 문항내용은 "
+                         "여기서 우선 가져온다.")
     ap.add_argument("--taggers", nargs="+", default=["주희", "태우", "다교"])
+    ap.add_argument("--type-classification", default="./selection/문항유형_classification.csv",
+                    help="문항유형(사실/차별/가치관) 사전 분류 CSV. 있으면 자동으로 채우고 "
+                         "민감여부만 사람이 판단한다.")
     args = ap.parse_args()
 
     inv, outdir = Path(args.inv), Path(args.out)
@@ -91,9 +109,25 @@ def main():
     vt = pd.read_csv(inv / "variables.csv")
     eta_path = inv / "eta2.csv"
     eta = pd.read_csv(eta_path) if eta_path.exists() else pd.DataFrame(columns=["item", "eta2"])
+    worded_path = Path(args.worded)
+    worded = (pd.read_csv(worded_path).set_index("var")["설문원문"]
+             if worded_path.exists() else pd.Series(dtype=str))
 
     cand = wave[wave["is_item_cand"]].copy()
     print(f"후보 {len(cand)}개")
+
+    # 문항내용: 설문원문(코드북 PDF에서 추출한 실제 질문 전문)을 우선 쓰고,
+    # 코드북에 없는 변수(가구 구성 등 조사원 기록 항목)만 .sav 라벨로 대체한다.
+    fallback = []
+    def pick_text(v: str, label: str) -> str:
+        w = worded.get(v)
+        if isinstance(w, str) and w.strip():
+            return w.strip()
+        fallback.append(v)
+        return label
+    cand["문항내용"] = [pick_text(v, lab) for v, lab in zip(cand["var"], cand["label"])]
+    if fallback:
+        print(f"설문원문 없어 라벨로 대체한 문항 {len(fallback)}개: {fallback}")
 
     info = vt.set_index("var")
     dk_col = pick_col(vt, DK_COLS)
@@ -143,21 +177,30 @@ def main():
 
     # wave_items.csv는 --target-year 시점에 이미 단일 연도로 계산돼 있어
     # 연도별 열(y2023 등)이 아니라 answer_rate 하나뿐이다.
+    # label(.sav 변수라벨)도 참고용으로 남겨둔다 — 축약 정도가 문항마다
+    # 달라서(8절 참고), 문항내용(설문원문)과 대조해서 봐야 할 때가 있다.
     sheet = cand[
-        ["var", "label", "선택지", "n_options", "answer_rate", "eta2", "eta2_구간",
-         "배터리", "배터리크기", "AB분할표본", "ordinal_guess"]
+        ["var", "문항내용", "label", "선택지", "n_options", "answer_rate", "eta2",
+         "eta2_구간", "배터리", "배터리크기", "AB분할표본", "ordinal_guess"]
     ].rename(
         columns={
             "var": "변수명",
-            "label": "문항내용",
+            "label": "라벨(참고)",
             "n_options": "선택지수",
             "answer_rate": "응답률",
             "ordinal_guess": "순서형",
         }
     )
     sheet["응답률"] = sheet["응답률"].round(3)
-    sheet["유형"] = ""   # 사실 / 태도 / 민감
-    sheet["포함"] = ""   # Y / N
+    type_path = Path(args.type_classification)
+    if type_path.exists():
+        type_map = pd.read_csv(type_path).set_index("변수명")["문항유형"]
+        sheet["문항유형"] = sheet["변수명"].map(type_map).fillna("")
+        print(f"문항유형 사전 분류 적용: {type_path} ({len(type_map)}개)")
+    else:
+        sheet["문항유형"] = ""   # 사실 / 차별 / 가치관 (드롭다운, 태깅기준 시트에 전체 정의)
+    sheet["민감여부"] = ""   # Y / N (문항유형이 "사실"이면 비워둘 것)
+    sheet["포함"] = ""       # Y / N
     sheet["메모"] = ""
     sheet = sheet.sort_values(["배터리크기", "배터리", "변수명"], ascending=[False, True, True])
 
@@ -166,23 +209,63 @@ def main():
         for name in args.taggers:
             sheet.to_excel(xw, sheet_name=name, index=False)
             ws = xw.sheets[name]
-            widths = {"A": 14, "B": 50, "C": 55, "D": 9, "E": 9, "F": 9,
-                      "G": 9, "H": 14, "I": 10, "J": 12, "K": 9,
-                      "L": 10, "M": 8, "N": 30}
+            widths = {"A": 14, "B": 60, "C": 30, "D": 55, "E": 9, "F": 9,
+                      "G": 9, "H": 9, "I": 14, "J": 10, "K": 12, "L": 9,
+                      "M": 20, "N": 10, "O": 8, "P": 30}
             for col, w in widths.items():
                 ws.column_dimensions[col].width = w
-            ws.freeze_panes = "C2"
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
+                                    min_col=2, max_col=4):
+                for cell in row:
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+            ws.freeze_panes = "B2"
+
+            # 드롭다운 — 직접 타이핑하면 "차별"/"차별문항"처럼 3인이 철자를
+            # 다르게 쓸 수 있어서, 정확히 이 값만 고르게 강제한다.
+            n_rows = len(sheet)
+            dv_type = DataValidation(type="list", formula1='"사실,차별,가치관"',
+                                     allow_blank=True, showDropDown=False)
+            dv_sens = DataValidation(type="list", formula1='"Y,N"',
+                                     allow_blank=True, showDropDown=False)
+            dv_incl = DataValidation(type="list", formula1='"Y,N"',
+                                     allow_blank=True, showDropDown=False)
+            ws.add_data_validation(dv_type)
+            ws.add_data_validation(dv_sens)
+            ws.add_data_validation(dv_incl)
+            dv_type.add(f"M2:M{n_rows + 1}")
+            dv_sens.add(f"N2:N{n_rows + 1}")
+            dv_incl.add(f"O2:O{n_rows + 1}")
 
         guide = pd.DataFrame(
             {
                 "항목": [
-                    "유형: 사실", "유형: 태도", "유형: 민감",
+                    "① 문항유형 입력값: 사실",
+                    "① 문항유형 입력값: 차별  (전체 정의: 패턴화된 태도·차별 문항)",
+                    "① 문항유형 입력값: 가치관  (전체 정의: 가치관·규범 문항)",
+                    "② 민감여부 (문항유형이 ①에서 정해진 뒤에만 판단)",
+                    "  판정 기준 1",
+                    "  판정 기준 2",
+                    "  판정 기준 3",
+                    "  판정 예시 (민감=Y)",
+                    "  판정 예시 (민감=N)",
                     "포함", "배터리크기", "AB분할표본", "eta2_구간",
                 ],
                 "정의": [
-                    "본인의 객관적 사실·행동을 묻는 문항 (투표 여부, 병원 방문 횟수, 가입 단체)",
-                    "의견·평가·믿음을 묻는 문항 (정부 지출 의견, 기관 신뢰, 자긍심)",
-                    "사회적으로 승인되는 답이 뚜렷한 문항 (이민자 인식, 성역할, 자살 태도, 지지 정당)",
+                    "본인의 객관적 사실·행동을 묻는 문항 (투표 여부, 병원 방문 횟수, 가입 단체). "
+                    "민감여부는 판단하지 않고 비워둔다 — 사회적 바람직성이 개입할 태도 표현 자체가 없음.",
+                    "특정 사회집단(이민자·여성/남성·성소수자·장애인·특정 정당 지지자 등)에 대한 태도나 "
+                    "그 집단과 관련된 차별적·배제적 판단을 묻는 문항. 서울 논문(Kim, Park & Suh 2026) "
+                    "Table 3의 첫 축과 동일한 구분.",
+                    "특정 집단을 지목하지 않는 일반적 가치·신념·규범을 묻는 문항 (가족관, 정부 역할에 "
+                    "대한 일반적 믿음, 삶의 만족도, 사회 신뢰 등).",
+                    "①에서 '차별' 또는 '가치관'으로 분류된 문항만 Y/N 판단. "
+                    "아래 기준 중 하나라도 해당하면 Y.",
+                    "문항 문구만 보고도 '사회적으로 더 바람직한' 응답 방향이 추론 가능한가",
+                    "특정 집단(성별·연령·이민자·장애인·성소수자·종교·정치성향 등)에 대한 차별적/배제적 "
+                    "태도를 직접 묻는가",
+                    "응답이 공개적으로 밝혀질 경우 사회적 비난·평판 손상 가능성이 있는가",
+                    "'이민자가 범죄를 늘린다는 데 동의하십니까' — 부정 응답이 사회적으로 바람직해 보임 → Y",
+                    "'여가 시간에 주로 무엇을 하십니까' — 바람직한 방향이 없는 개인 선호 → N",
                     "최종 30개에 넣을 후보면 Y. 각자 40개 내외로 표시할 것",
                     "같은 어간을 공유하는 문항 수. 같은 배터리에서 2개 이상 뽑으면 조건-타깃 누출 위험",
                     "같은 내용을 다른 문구로 물은 A/B형이 존재. 문구 효과의 인간 기준값이 있음",
@@ -192,11 +275,15 @@ def main():
         )
         guide.to_excel(xw, sheet_name="태깅기준", index=False)
         ws = xw.sheets["태깅기준"]
-        ws.column_dimensions["A"].width = 18
-        ws.column_dimensions["B"].width = 90
+        ws.column_dimensions["A"].width = 30
+        ws.column_dimensions["B"].width = 95
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=2):
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     print(f"-> {xlsx}")
-    print("\n각자 시트에 독립적으로 태깅한 뒤 kgss_agreement.py로 일치도를 계산하세요.")
+    print("\n문항유형은 자동 분류돼 있음 — 이상하면 드롭다운으로 고치세요.")
+    print("민감여부만 각자 독립적으로 태깅한 뒤 kgss_agreement.py로 일치도를 계산하세요.")
 
     # 요약 통계
     print("\n[배터리 상위 10]")
