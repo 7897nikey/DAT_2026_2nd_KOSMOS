@@ -75,7 +75,17 @@ uv run kgss_contamination.py score --out .\probe
 # 7. 6변수 페르소나 표본 생성 (FINALWT 가중 복원추출, 대조군 "6변수" 조건용)
 uv run kgss_persona_bootstrap.py --inv .\inventory --out .\persona_sample --n 200 --seed 42
 
-# 8. 본실험 프롬프트 생성 (최종 문항 확정 후) + Colab에서 로짓 추출
+# 8. C0/demo/full 조건 분포 재현 타당성 검증 (운영진 Q1/Q2 대응)
+uv run kgss_c0_validity.py build --level c0 --inv .\inventory --out .\c0_check
+uv run kgss_c0_validity.py build --level demo --inv .\inventory --out .\c0_check_demo
+uv run kgss_c0_validity.py build --level full --inv .\inventory --out .\c0_check_full --n-personas 40
+#   Colab에서 kgss_token_check.py --contam-probes probes.csv --out <out디렉토리> --no-contam-generate 실행
+#   -> logit_responses.csv 받아서 각 out디렉토리에 넣기
+uv run kgss_c0_validity.py score --out .\c0_check
+uv run kgss_c0_validity.py score --out .\c0_check_demo
+uv run kgss_c0_validity.py score --out .\c0_check_full
+
+# 9. 본실험 프롬프트 생성 (최종 문항 확정 후) + Colab에서 로짓 추출
 uv run kgss_experiment_prompt.py --items .\selection\최종문항.csv --out .\experiment
 uv run kgss_token_check.py --contam-probes .\experiment\experiment_probes.csv --out .\experiment
 ```
@@ -95,6 +105,7 @@ uv run kgss_token_check.py --contam-probes .\experiment\experiment_probes.csv --
 | `probe/README.md` | 오염 프로빙 절차 |
 | `probe/contamination_result.md` | 오염 프로브 채점 결과 (A/B/C/E, 모델별) |
 | `persona_sample/persona_sample.csv` | FINALWT 가중 복원추출 6변수 페르소나 표본 |
+| `c0_check*/c0_validity_result.md` | C0/demo/full 조건별 population Wasserstein거리·subgroup r (운영진 Q1/Q2 대응) |
 
 ## 진행 상황
 
@@ -107,5 +118,15 @@ uv run kgss_token_check.py --contam-probes .\experiment\experiment_probes.csv --
   코드가 안 걸러지고 섞여 있던 버그를 발견·수정해 A/C/E만 재실행한 결과,
   뚜렷한 오염 증거는 확인되지 않음(C의 선택지순서 정확일치율만 우연보다
   높아 완전한 결백까지는 주장 못 함). 자세한 수치는 `probe/contamination_result.md` 참고.
+- **C0/demo/full 조건 분포 재현 타당성 검증**: 성별×연령 10셀 기준 subgroup r을
+  "셀평균 − 문항전체평균" 편차로 계산(원값 상관은 문항 자체의 지지율만 재는
+  가짜신호라 편차로 교정). 페르소나 정보 없음(C0) → 성별+연령(demo) →
+  6변수 서사형(full) 순으로 정보량을 늘렸을 때, population Wasserstein거리는
+  꾸준히 개선(EXAONE 0.85→0.81→0.73, Kanana 0.92→0.88→0.83)됐지만 subgroup r은
+  세 조건 모두 0 근처(EXAONE -0.03~0.00, Kanana 0.00~0.03)에 머묾 — 정보량을
+  늘려도 두 모델 다 성별×연령 하위집단을 우연 이상으로 구분하는 능력이 생기지
+  않는다는 뜻. 전체 지지율(population-level) 근사는 개선되지만 하위집단 조건화는
+  작동 안 함 → 최빈 쏠림이 페르소나 부재보다 모델 자체의 모드 붕괴 성질에서 올
+  가능성에 힘을 싣는 결과(Q2). 자세한 수치는 `c0_check*/c0_validity_result.md` 참고.
 - **본실험**: 프롬프트 생성 파이프라인(`kgss_experiment_prompt.py`)까지 준비
   완료, 최종 문항 확정 후 실행 예정.
