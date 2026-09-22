@@ -1,5 +1,5 @@
 r"""
-C0(페르소나 없음)/demo(성별+연령)/full(6변수) 조건 분포 재현 타당성 검증
+C0(페르소나 없음)/adult(한국 성인)/demo(성별+연령)/full(6변수) 조건 분포 재현 타당성 검증
 
 서울 논문(Kim, Park & Suh 2026)이 EXAONE 3.5 7.8B·Qwen3-30B 같은 오픈웨이트에서
 subgroup r이 0.05~0.12로 붕괴했다고 보고함 — 우리가 쓰는 EXAONE 2.4B/Kanana 2.1B는
@@ -18,8 +18,11 @@ subgroup r이 0.05~0.12로 붕괴했다고 보고함 — 우리가 쓰는 EXAONE
                                  지표가 되고, 페르소나가 없는 C0에서는 이론상 0 근처가
                                  나와야 정상이다(서울 논문 C0 실측 0.03).
 
-세 조건:
+네 조건 (CLAUDE.md 3/7절 "대조군 4수준"):
     c0    페르소나 없음. 문항당 프롬프트 1개, 모든 셀에 같은 예측값이 복사됨.
+    adult "당신은 한국 성인입니다" 머리말만 추가. 구체적 인구통계는 없음 — c0와 똑같이
+          문항당 프롬프트 1개, 모든 셀에 같은 예측값이 복사됨. c0와 비교하면 "막연한
+          정체성 지칭"만으로 뭔가 달라지는지를 분리해서 본다.
     demo  "당신은 {연령대 대표나이}세 {성별}입니다" 머리말 추가. 문항×10셀 = 프롬프트
           10개, 셀마다 실제로 다른 예측값이 나옴.
     full  persona_sample.csv(FINALWT 가중 복원추출 응답자)에서 n명을 뽑아 6변수 서사형
@@ -28,17 +31,19 @@ subgroup r이 0.05~0.12로 붕괴했다고 보고함 — 우리가 쓰는 EXAONE
           채점 — 한 셀에 여러 명이 걸리면 그 셀의 모델 예측을 평균해서 문항당 값 하나로
           만든 뒤 상관시킨다.
 
-    세 조건 모두 subgroup r을 같은 방식(편차 기준)으로 계산하므로 직접 비교 가능하다.
-    c0에서 벗어나 demo·full 순으로 r이 올라가면 페르소나 정보량이 늘수록 실제로 셀
-    구분 능력이 생긴다는 증거고, 안 올라가면 조건화 자체가 이 모델 규모에서는
+    네 조건 모두 subgroup r을 같은 방식(편차 기준)으로 계산하므로 직접 비교 가능하다.
+    c0에서 벗어나 adult·demo·full 순으로 r이 올라가면 페르소나 정보량이 늘수록 실제로
+    셀 구분 능력이 생긴다는 증거고, 안 올라가면 조건화 자체가 이 모델 규모에서는
     무의미하다는 증거(Q1/Q2 대응).
 
 사용법:
     uv run kgss_c0_validity.py build --level c0 --inv ./inventory --out ./c0_check
+    uv run kgss_c0_validity.py build --level adult --inv ./inventory --out ./c0_check_adult
     uv run kgss_c0_validity.py build --level demo --inv ./inventory --out ./c0_check_demo
     uv run kgss_c0_validity.py build --level full --inv ./inventory --out ./c0_check_full --n-personas 40
     # Colab: uv run kgss_token_check.py --contam-probes probes.csv --out <out> --no-contam-generate
     uv run kgss_c0_validity.py score --out ./c0_check
+    uv run kgss_c0_validity.py score --out ./c0_check_adult
     uv run kgss_c0_validity.py score --out ./c0_check_demo
     uv run kgss_c0_validity.py score --out ./c0_check_full
 """
@@ -95,6 +100,12 @@ def sex_labels(vt):
     return {float(k): v.strip() for k, v in vl.items() if float(k) in (1.0, 2.0)}
 
 
+def entropy_bits(p):
+    p = np.asarray(p, dtype=float)
+    p = p[p > 0]
+    return float(-np.sum(p * np.log2(p)))
+
+
 def weighted_dist(df, var, codes):
     s = df[[var, "FINALWT"]].dropna()
     s = s[s[var].isin(codes)]
@@ -144,6 +155,12 @@ def build(args):
                 "probe_id": f"C0_{v}", "var": v, "prompt": item_text,
                 "codes": json.dumps(codes), "gold": json.dumps(gold),
             })
+        elif args.level == "adult":  # 구체적 인구통계 없이 "한국 성인" 머리말만
+            rows.append({
+                "probe_id": f"ADULT_{v}", "var": v,
+                "prompt": f"당신은 한국 성인입니다.\n\n{item_text}",
+                "codes": json.dumps(codes), "gold": json.dumps(gold),
+            })
         elif args.level == "demo":  # 셀마다 별도 프롬프트 (성별+연령 머리말)
             for sex_code, sex_lab in sexlab.items():
                 for age_grp, age_rep in AGE_REP.items():
@@ -188,7 +205,8 @@ def score(args):
     logits = pd.read_csv(outdir / "logit_responses.csv")
     cells = pd.read_csv(outdir / "real_cells.csv")
     has_cells = "sex" in probes.columns
-    level_name = {"C0_": "C0(페르소나 없음)", "DEMO_": "demo(성별+연령)", "FULL_": "full(6변수)"}
+    level_name = {"C0_": "C0(페르소나 없음)", "ADULT_": "adult(한국 성인)",
+                  "DEMO_": "demo(성별+연령)", "FULL_": "full(6변수)"}
     level = next((v for k, v in level_name.items() if probes["probe_id"].iloc[0].startswith(k)), "?")
 
     d = probes.merge(logits, on="probe_id", how="inner")
@@ -200,6 +218,7 @@ def score(args):
         g = g.copy()
         ws, masses = [], []
         model_pred = []
+        ent_model, ent_gold = [], []
         for _, r in g.iterrows():
             gold = np.array(json.loads(r["gold"]))
             pred = np.array(json.loads(r["model_dist"]))
@@ -208,9 +227,15 @@ def score(args):
             masses.append(r["mass"])
             codes = json.loads(r["codes"])
             model_pred.append(float(np.sum(np.array(codes) * pred)))
+            ent_model.append(entropy_bits(pred))
+            ent_gold.append(entropy_bits(gold))
         g["model_pred"] = model_pred
         L.append(f"- 문항 {g['var'].nunique()}개 / 프로브 {len(g)}건, "
                  f"평균 Wasserstein거리 **{np.mean(ws):.4f}**, 평균 선택지확률질량 {np.mean(masses):.4f}\n")
+        L.append(f"- 모드 붕괴 점검: 모델 출력 엔트로피 **{np.mean(ent_model):.3f}bit**"
+                 f"(유효 선택지 {2**np.mean(ent_model):.2f}개) vs 실제 응답 엔트로피 "
+                 f"{np.mean(ent_gold):.3f}bit(유효 선택지 {2**np.mean(ent_gold):.2f}개) "
+                 f"— 비율 {np.mean(ent_model)/np.mean(ent_gold):.2f}\n")
 
         if has_cells:
             # 셀 하나에 여러 프롬프트(full의 여러 페르소나)가 걸리면 문항당 값 하나로 평균
@@ -237,9 +262,10 @@ def score(args):
                      "여기서 r이 0에서 벗어나 올라가면, 이 조건의 페르소나 정보가 실제로 "
                      "셀 구분 능력을 만든다는 증거.\n")
         else:
-            L.append("> C0는 페르소나가 없어 모델 예측이 셀마다 안 달라지므로, 이 r은 "
-                     "\"모델이 인구통계 하위집단 차이를 우연히라도 맞히는지\"를 재는 것이지 "
-                     "실제 조건화 능력을 재는 게 아니다. 이론상 0 근처가 정상(서울 논문 C0 실측 0.03).\n")
+            L.append(f"> {level}. 구체적 인구통계가 없어 모델 예측이 셀마다 안 달라지므로, "
+                     "이 r은 \"모델이 인구통계 하위집단 차이를 우연히라도 맞히는지\"를 재는 "
+                     "것이지 실제 조건화 능력을 재는 게 아니다. 이론상 0 근처가 정상"
+                     "(서울 논문 C0 실측 0.03).\n")
 
     text = "".join(L)
     (outdir / "c0_validity_result.md").write_text(text, encoding="utf-8")
@@ -251,7 +277,7 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
-    b.add_argument("--level", choices=["c0", "demo", "full"], default="c0")
+    b.add_argument("--level", choices=["c0", "adult", "demo", "full"], default="c0")
     b.add_argument("--inv", default="./inventory")
     b.add_argument("--worded", default="./selection/variables_worded.csv")
     b.add_argument("--year", type=int, default=2023)

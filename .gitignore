@@ -33,6 +33,7 @@ c0_check*/*
 !persona_sample/README.md
 !register_pilot/register_pilot_result.md
 !c0_check/c0_validity_result.md
+!c0_check_adult/c0_validity_result.md
 !c0_check_demo/c0_validity_result.md
 !c0_check_full/c0_validity_result.md
 
