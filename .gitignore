@@ -23,6 +23,8 @@ probe/*
 persona_sample/*
 register_pilot/*
 experiment/*
+experiment_expand/*
+data_bundle/
 c0_check*/*
 
 !inventory/diagnostics.md
