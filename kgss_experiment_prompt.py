@@ -121,7 +121,13 @@ def main():
         if v not in worded.index:
             print(f"  경고: {v} variables_worded.csv에 없음, 건너뜀")
             continue
-        txt = str(worded.at[v, "설문원문"] or "")
+        txt = worded.at[v, "설문원문"]
+        if pd.isna(txt) or not str(txt).strip():
+            # 설문원문 결측: label로 대체(코드북 PDF 추출 실패 사례). "nan" 문자열이 프롬프트에
+            # 섞여 들어가는 걸 막는다. 대체했다는 사실을 반드시 출력해 조용히 넘어가지 않는다.
+            txt = worded.at[v, "label"]
+            print(f"  경고: {v} 설문원문 결측, label로 대체함: {txt}")
+        txt = str(txt)
         opts = real_options(v, vt)
         built = build_item_text(txt, opts)
         if built is None:

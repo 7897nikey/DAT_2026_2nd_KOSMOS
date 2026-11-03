@@ -95,17 +95,40 @@ FAKE_SURVEY = "한국사회인식조사(KSPS)"
 
 
 # ---------------------------------------------------------------- 유틸
-def parse_options(s: str) -> list[tuple[float, str]]:
-    """'1=매우 그렇다 | 2=약간 그렇다' -> [(1.0, '매우 그렇다'), ...]"""
+STRUCTURAL = {-8.0, -1.0}
+DK_COLS = ["legacy_dk", "dk"]
+INAP_COLS = ["legacy_inap", "inap"]
+
+
+def pick_col(dfr: pd.DataFrame, names: list[str]) -> str | None:
+    for n in names:
+        if n in dfr.columns:
+            return n
+    return None
+
+
+def real_options(var: str, vt: pd.DataFrame) -> list[tuple[float, str]]:
+    """variables_worded.csv의 '선택지' 문자열은 DK/비해당 코드를 안 거른
+    원본이라(kgss_codebook.py가 그렇게 만듦) 쓰지 않는다. inventory/variables.csv의
+    value_labels를 kgss_shortlist.py의 fmt_options()와 같은 기준으로 걸러서
+    쓴다 — CLAUDE.md 3절 "모르겠다는 선택지로 제공하지 않음" 원칙 위반 버그 수정
+    (2026-09-21, probe A/C/E가 8=모름·9=비해당을 선택지로 노출한 채 실행됐던 것)."""
+    if var not in vt.index:
+        return []
+    row = vt.loc[var]
+    try:
+        vl = json.loads(row["value_labels"])
+    except Exception:
+        return []
+    dk_col, inap_col = pick_col(vt, DK_COLS), pick_col(vt, INAP_COLS)
+    dk = set(json.loads(row[dk_col])) if dk_col and pd.notna(row[dk_col]) else set()
+    inap = set(json.loads(row[inap_col])) if inap_col and pd.notna(row[inap_col]) else set()
     out = []
-    for part in str(s).split("|"):
-        if "=" not in part:
+    for k, lab in sorted(vl.items(), key=lambda kv: float(kv[0])):
+        code = float(k)
+        if code in STRUCTURAL or code in dk or code in inap:
             continue
-        k, v = part.split("=", 1)
-        try:
-            out.append((float(k.strip()), v.strip()))
-        except ValueError:
-            continue
+        out.append((code, lab))
     return out
 
 
@@ -141,7 +164,8 @@ def build(args):
     df = pd.read_parquet(inv / "kgss_clean.parquet")
     wave = pd.read_csv(inv / "wave_items.csv")
     worded = pd.read_csv(args.worded).set_index("var")
-    battery = pd.read_csv(inv / "variables.csv").set_index("var")["battery"]
+    vt = pd.read_csv(inv / "variables.csv").set_index("var")
+    battery = vt["battery"]
 
     cand = wave[wave["is_item_cand"]]["var"].tolist()
     cand = [v for v in cand if v in worded.index and v in df.columns]
@@ -156,7 +180,7 @@ def build(args):
     n_skip_battery = 0
     for v in cand:
         txt = str(worded.at[v, "설문원문"] or "")
-        opts = parse_options(worded.at[v, "선택지"])
+        opts = real_options(v, vt)
         if len(txt) < 40 or not (2 <= len(opts) <= 7):
             continue
         codes = [c for c, _ in opts]
