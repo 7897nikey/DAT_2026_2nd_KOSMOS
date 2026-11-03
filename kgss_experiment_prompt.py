@@ -22,6 +22,7 @@ kgss_token_check.py --contam-probes로 그대로 로짓을 뽑을 수 있다.
 import argparse
 import io
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +37,9 @@ ADDRESSEES = ["당신", "이사람"]
 STRUCTURAL = {-8.0, -1.0}
 DK_COLS = ["legacy_dk", "dk"]
 INAP_COLS = ["legacy_inap", "inap"]
+# legacy_dk에 등록 안 된 정형 무응답 라벨 (MEDIAPOL·HLPRT1·HUMNAT의 8=DK/Refusal 누출, 2026-11-03).
+# 라벨 어휘 전체가 아니라 정형 라벨의 시작만 본다 — ELEFRAUDA류 실질 응답 오분류 방지(CLAUDE.md 6절)
+DK_LABEL = re.compile(r"^\s*(DK/Refusal|Refusal|모르겠다/무응답|비해당)", re.I)
 
 
 def pick_col(dfr: pd.DataFrame, names: list[str]) -> str | None:
@@ -64,7 +68,7 @@ def real_options(var: str, vt: pd.DataFrame) -> list[tuple[float, str]]:
     out = []
     for k, lab in sorted(vl.items(), key=lambda kv: float(kv[0])):
         code = float(k)
-        if code in STRUCTURAL or code in dk or code in inap:
+        if code in STRUCTURAL or code in dk or code in inap or DK_LABEL.match(str(lab)):
             continue
         out.append((code, lab))
     return out
@@ -94,6 +98,8 @@ def main():
     ap.add_argument("--levels", nargs="+", default=["c0", "adult", "demo", "full"],
                     choices=["c0", "adult", "demo", "full"])
     ap.add_argument("--n-personas", type=int, default=None, help="demo/full에 쓸 페르소나 수 제한 (기본 전체)")
+    ap.add_argument("--age-grid", type=int, nargs="+", default=None,
+                    help="demo 페르소나를 실제 표본 대신 성별 x 이 연령들의 격자로 만든다 (H-age 검정용). full과 같이 쓸 수 없음")
     ap.add_argument("--year", type=int, default=2023)
     ap.add_argument("--out", default="./experiment")
     args = ap.parse_args()
@@ -110,7 +116,13 @@ def main():
 
     worded = pd.read_csv(args.worded).set_index("var")
     vt = pd.read_csv(Path(args.inv) / "variables.csv").set_index("var")
-    persona = pd.read_csv(args.persona)
+    if args.age_grid:
+        if "full" in args.levels:
+            raise SystemExit("--age-grid는 6변수 정보가 없어 full 수준과 같이 쓸 수 없습니다.")
+        persona = pd.DataFrame([dict(persona_id=f"g{sx}{a}", SEX=sx, SEX_label=lab, AGE=a)
+                                for sx, lab in [(1, "남자"), (2, "여자")] for a in args.age_grid])
+    else:
+        persona = pd.read_csv(args.persona)
     if args.n_personas:
         persona = persona.head(args.n_personas)
     print(f"문항 {len(var_list)}개, 페르소나 {len(persona)}명, 수준 {args.levels}")

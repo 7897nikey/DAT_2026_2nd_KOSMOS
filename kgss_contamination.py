@@ -98,6 +98,8 @@ FAKE_SURVEY = "한국사회인식조사(KSPS)"
 STRUCTURAL = {-8.0, -1.0}
 DK_COLS = ["legacy_dk", "dk"]
 INAP_COLS = ["legacy_inap", "inap"]
+# legacy_dk에 등록 안 된 정형 무응답 라벨 (MEDIAPOL·HLPRT1·HUMNAT의 8=DK/Refusal 누출, 2026-11-03)
+DK_LABEL = re.compile(r"^\s*(DK/Refusal|Refusal|모르겠다/무응답|비해당)", re.I)
 
 
 def pick_col(dfr: pd.DataFrame, names: list[str]) -> str | None:
@@ -126,7 +128,7 @@ def real_options(var: str, vt: pd.DataFrame) -> list[tuple[float, str]]:
     out = []
     for k, lab in sorted(vl.items(), key=lambda kv: float(kv[0])):
         code = float(k)
-        if code in STRUCTURAL or code in dk or code in inap:
+        if code in STRUCTURAL or code in dk or code in inap or DK_LABEL.match(str(lab)):
             continue
         out.append((code, lab))
     return out

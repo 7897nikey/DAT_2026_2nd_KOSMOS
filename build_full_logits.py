@@ -1,10 +1,15 @@
-"""Kaggle용 전체 로짓 재생성 노트북 생성 (fp32, 배치 8, 마지막 위치만, 46,545건 x 2모델).
+"""Kaggle용 소형 모델 로짓 노트북 생성 (fp32, 배치 8, 마지막 위치만, EXAONE 2.4B + Kanana 2.1B).
 
 게이트 통과 설정 그대로 쓴다 (kgss_batch_gate.ipynb: 배치 8 최대 차이 1e-5 수준, 뒤집힘 0).
-- 입력: experiment/experiment_probes.csv 를 gzip+base64로 노트북에 내장 (probe_id, prompt, codes만)
+- 입력: --probes CSV를 gzip+base64로 노트북에 내장 (probe_id, prompt, codes만)
 - 출력: /kaggle/working/logit_<tag>_fp32.csv (probe_id, model, model_dist, mass)
 - 중단 후 재실행하면 이미 쓴 probe_id는 건너뛴다 (재개 가능).
+
+사용법:
+    uv run build_full_logits.py                                    # 본실험 (기본값)
+    uv run build_full_logits.py --probes experiment_expand/experiment_probes.csv --out kgss_expand_logits.ipynb
 """
+import argparse
 import base64
 import gzip
 import io
@@ -14,7 +19,11 @@ from pathlib import Path
 import pandas as pd
 
 BASE = Path(__file__).resolve().parent
-probes = pd.read_csv(BASE / "experiment" / "experiment_probes.csv", encoding="utf-8-sig")
+ap = argparse.ArgumentParser()
+ap.add_argument("--probes", default="experiment/experiment_probes.csv")
+ap.add_argument("--out", default="kgss_full_logits.ipynb")
+args = ap.parse_args()
+probes = pd.read_csv(BASE / args.probes, encoding="utf-8-sig")
 slim = probes[["probe_id", "prompt", "codes"]]
 buf = io.BytesIO()
 with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
@@ -111,6 +120,6 @@ nb = {
                  "language_info": {"name": "python"}},
     "nbformat": 4, "nbformat_minor": 5,
 }
-out = BASE / "kgss_full_logits.ipynb"
+out = BASE / args.out
 out.write_text(json.dumps(nb, ensure_ascii=False), encoding="utf-8")
 print("저장:", out, out.stat().st_size // 1024, "KB")
