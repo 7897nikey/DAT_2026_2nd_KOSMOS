@@ -64,7 +64,7 @@ OUT = EXP / "분석결과"
 OUT.mkdir(exist_ok=True)
 STRUCT = {-1.0, -8.0}
 MIN_CELL_N = 20
-AGE_BINS = [17, 29, 39, 49, 59, 200]
+AGE_BINS = [18, 30, 40, 50, 60, 200]  # right=False: [18,30) = 18-29세
 AGE_LABELS = ["18-29", "30-39", "40-49", "50-59", "60+"]
 FULL_EXTRA = ["EDUC", "MARITAL", "URBAN", "REGION"]
 DROP_ORDER = ["REGION", "URBAN", "MARITAL", "EDUC"]  # 먼저 빠지는 변수부터
